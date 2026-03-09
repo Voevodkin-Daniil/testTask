@@ -1,0 +1,282 @@
+def main2():
+    def parse_command(command_str):
+        """Разбирает введенную команду на имя и аргументы"""
+        parts = command_str.strip().split()
+        if not parts:
+            return None, []
+
+        cmd = parts[0].lower()
+        args = parts[1:]
+        return cmd, args
+
+    def validate_number(arg, arg_name, positive_only=False):
+        """Проверяет, что аргумент является числом"""
+        try:
+            value = float(arg)
+            if positive_only and value <= 0:
+                print(f"Ошибка: {arg_name} должно быть положительным числом")
+                return None
+            return value
+        except ValueError:
+            print(f"Ошибка: {arg_name} должно быть числом (получено '{arg}')")
+            return None
+
+    def print_help():
+        """Выводит справку по доступным командам"""
+        print("\n=== Доступные команды ===")
+        print("  up <высота>           - взлет на указанную высоту (в метрах)")
+        print("  go <восток> <север> [высота] - полет на восток/север (высота необязательна)")
+        print("  home                  - полет домой (возврат в точку взлета)")
+        print("  pos                   - показать текущую позицию")
+        print("  status                - показать статус дрона")
+        print("  land                  - посадка (если нужно)")
+        print("  exit                  - выход из программы")
+        print("  help                  - показать эту справку")
+        print("=" * 40)
+
+    try:
+        # Подключение к дрону
+        print("Подключение к дрону...")
+        BP = Multirotor()
+
+        # Получаем начальный статус
+        status = BP.get_status()
+        print(f"\n Подключено. Домашняя позиция: {status['home']}")
+
+        # Установка режима GUIDED
+        print("Установка режима GUIDED...")
+        if not BP.set_mode('GUIDED'):
+            print("✗ Ошибка: Не удалось установить режим GUIDED")
+            return 1
+
+        print(" Режим GUIDED установлен")
+
+        # Переменные для отслеживания состояния
+        armed = False
+        in_air = False
+        current_alt = BP.alt
+
+        print("\n" + "=" * 50)
+        print("УПРАВЛЕНИЕ ДРОНОМ")
+        print("=" * 50)
+        print_help()
+
+        # Основной цикл обработки команд
+        while True:
+            try:
+                # Обновляем текущую высоту
+                current_alt = BP.alt
+
+                # Показываем приглашение с текущим статусом
+                status_indicator = "1" if in_air else "-1"
+                prompt = f"\n[{status_indicator} alt:{current_alt:.1f}м] Введите команду: "
+                user_input = input(prompt)
+
+                # Разбираем команду
+                cmd, args = parse_command(user_input)
+
+                if not cmd:
+                    continue
+
+                match cmd:
+                    case "up":
+                        # Команда взлета: up <высота>
+                        if len(args) != 1:
+                            print("✗ Ошибка: Неверный формат. Использование: up <высота>")
+                            print("  Пример: up 10")
+                            continue
+
+                        # Валидация высоты
+                        target_alt = validate_number(args[0], "высота", positive_only=True)
+                        if target_alt is None:
+                            continue
+
+                        """
+                        # Проверка, не взлетел ли уже
+                        if in_air:
+                            print(f"✗ Дрон уже в воздухе на высоте {current_alt:.1f}м")
+                            continue
+                        """
+
+                        # Армирование (если еще не заармировано)
+                        if not armed:
+                            print("Армирование двигателей...")
+                            if BP.arm():
+                                armed = True
+                                print(" Двигатели заармированы")
+                            else:
+                                print("Ошибка армирования")
+                                continue
+
+                        # Взлет
+                        print(f"Взлет на высоту {target_alt}м...")
+                        if BP.takeoff(target_alt):
+                            in_air = True
+                            print(f" Дрон на высоте {BP.alt:.1f}м")
+                            current_alt = BP.alt
+                        else:
+                            print("✗ Ошибка взлета")
+
+                    case "go":
+                        # Команда полета: go <восток> <север> [высота]
+                        if len(args) < 2 or len(args) > 3:
+                            print("✗ Ошибка: Использование: go <восток> <север> [высота]")
+                            print("  Пример: go 30 50     - полет 30м на восток, 50м на север")
+                            print("  Пример: go 30 50 20  - полет + изменение высоты на 20м")
+                            continue
+
+                        # Проверка что дрон в воздухе
+                        if not in_air:
+                            print("✗ Дрон не в воздухе. Сначала выполните взлет (up)")
+                            continue
+
+                        # Валидация
+                        east = validate_number(args[0], "восток")
+                        north = validate_number(args[1], "север")
+                        if east is None or north is None:
+                            continue
+
+                        # Если есть третий аргумент - используем его как высоту, иначе 0 (текущая)
+                        target_alt = 0
+                        if len(args) == 3:
+                            target_alt = validate_number(args[2], "высота")
+                            if target_alt is None:
+                                continue
+                            print(f"Полет: восток={east}м, север={north}м, высота={target_alt}м")
+                        else:
+                            print(f"Полет: восток={east}м, север={north}м (текущая высота)")
+
+                        # Летим - flight_to сам разберется с высотой
+                        if BP.flight_to(east, north, target_alt):
+                            print(f"✓ Точка достигнута. lat={BP.lat:.7f}°, lon={BP.lon:.7f}°, alt={BP.alt:.1f}м")
+                        else:
+                            print("✗ Ошибка выполнения полета")
+
+                    case "home":
+                        # Команда возврата домой
+                        if not in_air:
+                            print("✗ Дрон не в воздухе")
+                            continue
+
+                        print("Возвращение домой...")
+                        if BP.home():
+                            in_air = False  # После home дрон обычно садится
+                            armed = False
+                            print(" Дрон вернулся домой и сел")
+                        else:
+                            print("✗ Ошибка возврата домой")
+                            # Пробуем альтернативный метод
+                            print("Пробую RTL режим...")
+                            BP.set_mode('RTL')
+                            time.sleep(10)
+                            in_air = False
+                            armed = False
+
+                    case "pos":
+                        # Показать текущую позицию
+                        print(f"\n=== Текущая позиция ===")
+                        print(f"  Широта: {BP.lat:.7f}°")
+                        print(f"  Долгота: {BP.lon:.7f}°")
+                        print(f"  Высота: {BP.alt:.1f}м")
+                        print(f"  В воздухе: {'Да' if in_air else 'Нет'}")
+
+                        # Показать расстояние до дома
+                        if hasattr(BP, 'home_lat') and BP.home_lat:
+                            # Простой расчет расстояния (для демонстрации)
+                            lat_diff = (BP.lat - BP.home_lat) * 111320  # примерно метров на градус
+                            lon_diff = (BP.lon - BP.home_lon) * 111320 * abs(
+                                math.cos(math.radians(BP.lat))) if 'math' in dir() else 0
+                            distance = ((lat_diff) ** 2 + (lon_diff) ** 2) ** 0.5
+                            print(f"  Расстояние до дома: {distance:.1f}м")
+
+                    case "status":
+                        # Показать полный статус
+                        print("\n=== Статус дрона ===")
+                        try:
+                            status = BP.get_status()
+                            for key, value in status.items():
+                                print(f"  {key}: {value}")
+                        except Exception as e:
+                            print(f"  Ошибка получения статуса: {e}")
+
+                    case "land":
+                        # Команда посадки
+                        if not in_air:
+                            print("✗ Дрон уже на земле")
+                            continue
+
+                        print("Посадка...")
+                        # Проверяем, есть ли метод land в классе Multirotor
+                        if hasattr(BP, 'land') and callable(getattr(BP, 'land')):
+                            if BP.land():
+                                in_air = False
+                                armed = False
+                                print(" Посадка выполнена")
+                            else:
+                                print("✗ Ошибка посадки")
+                        else:
+                            # Если нет метода land, используем RTL или установку режима LAND
+                            print("Метод land не найден, пробую режим LAND...")
+                            if BP.set_mode('LAND'):
+                                time.sleep(5)
+                                in_air = False
+                                armed = False
+                                print(" Режим LAND активирован")
+
+                    case "exit":
+                        # Выход из программы
+                        print("\nЗавершение программы...")
+
+                        # Безопасное завершение: если дрон в воздухе, пробуем вернуть домой
+                        if in_air:
+                            print("Дрон в воздухе. Возврат домой перед выходом...")
+                            BP.home()
+                            time.sleep(3)
+
+                        print("Программа завершена")
+                        break
+
+                    case "help":
+                        print_help()
+
+                    case _:
+                        # Неизвестная команда
+                        print(f"✗ Неизвестная команда: '{cmd}'")
+                        print("  Введите 'help' для списка доступных команд")
+
+            except KeyboardInterrupt:
+                print("\n\nПолучен сигнал прерывания (Ctrl+C)")
+                print("Завершение работы...")
+
+                # Безопасное завершение при Ctrl+C
+                if in_air:
+                    print("Дрон в воздухе. Попытка безопасной посадки...")
+                    try:
+                        if hasattr(BP, 'home'):
+                            BP.home()
+                            time.sleep(5)
+                        else:
+                            BP.set_mode('RTL')
+                            time.sleep(5)
+                    except:
+                        pass
+
+                break
+
+            except Exception as e:
+                print(f"✗ Ошибка при выполнении команды: {e}")
+                import traceback
+                traceback.print_exc()
+                print("\nПродолжение работы...")
+
+        print("\nПрограмма main 2 завершена.")
+        return 0
+
+    except ConnectionError as e:
+        print(f"✗ Ошибка подключения к дрону: {e}")
+        return 1
+    except Exception as e:
+        print(f"✗ Критическая ошибка: {e}")
+        import traceback
+        traceback.print_exc()
+        return 1

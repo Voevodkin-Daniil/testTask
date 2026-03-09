@@ -25,7 +25,7 @@ class Multirotor:
     Класс для управления мультироторным БПЛА через MAVLink
     """
 
-    # Атрибуты класса
+    # Атрибуты
     lat: float = 0.0  # текущая широта в градусах
     lon: float = 0.0  # текущая долгота в градусах
     alt: float = 0.0  # текущая высота в метрах
@@ -195,25 +195,23 @@ class Multirotor:
         try:
             self.master.arducopter_arm()
             self.master.motors_armed_wait()
-            print("Двигатели вооружены")
+            print("Двигатели включены")
             return True
         except Exception as e:
             print(f"Ошибка при армовании: {e}")
             return False
 
-    # Takeoff
     def takeoff(self, altitude: float) -> bool:
         """
         Взлет на заданную высоту
-
-        Args:
-            altitude: целевая высота в метрах
-
-        Returns:
-            True если взлет выполнен успешно
         """
         if altitude <= 0:
             print("Ошибка: высота должна быть положительной")
+            return False
+
+        # Добавить проверку, не взлетел ли уже
+        if hasattr(self, 'is_flying') and self.is_flying:
+            print("Ошибка: дрон уже в воздухе")
             return False
 
         try:
@@ -227,9 +225,9 @@ class Multirotor:
             )
             print(f"Команда взлета отправлена на высоту {altitude} м")
 
-            # Wait until vehicle reaches 90% of target altitude
+            # Ждем достижения высоты
             start_time = time.time()
-            max_wait = 60  # maximum wait time for takeoff
+            max_wait = 60
 
             while time.time() - start_time < max_wait:
                 msg = self.master.recv_match(type='GLOBAL_POSITION_INT', blocking=True, timeout=1)
@@ -239,7 +237,11 @@ class Multirotor:
 
                     if current_alt >= altitude * 0.9:
                         print("Достигнута заданная высота взлета")
-                        self._update_current_position()  # Update current position
+                        self._update_current_position()
+
+                        # Установить флаг, что дрон в воздухе
+                        self.is_flying = True
+                        self.current_altitude = current_alt
                         return True
 
                 time.sleep(1)
@@ -342,7 +344,7 @@ class Multirotor:
 
                 # Проверка на половину пути
                 if not half_distance_notified and distance <= total_distance * 0.5:
-                    print(f"\n*** Половина пути пройдена! Осталось {distance:.1f}м ***")
+                    print(f"\n!!!!! Половина пути пройдена! Осталось {distance:.1f}м !!!!!")
                     half_distance_notified = True
 
                 # Отправка команды на полет
