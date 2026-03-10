@@ -193,6 +193,8 @@ class Multirotor:
             True если АРМ успешен
         """
         try:
+            self.set_mode('GUIDED')
+
             self.master.arducopter_arm()
             self.master.motors_armed_wait()
             print("Двигатели включены")
@@ -509,6 +511,7 @@ class Multirotor:
                     if current_alt <= 0.2:  # 0.2 meters is considered landed
                         print("Посадка завершена")
                         self._update_current_position()
+                        self.is_flying = False
                         time.sleep(2)  # Wait for stabilization
                         return True
 
