@@ -168,8 +168,7 @@ class Multirotor:
                 mode_id
             )
 
-            # Wait for confirmation
-            timeout = time.time() + 5  # 5 seconds timeout
+            timeout = time.time() + 5  # 5 timeout
             while time.time() < timeout:
                 ack = self.master.recv_match(type='HEARTBEAT', blocking=False)
                 if ack and ack.custom_mode == mode_id:
@@ -255,7 +254,7 @@ class Multirotor:
             print(f"Ошибка во время взлета: {e}")
             return False
 
-    def flight_to(self, dx: float, dy: float, target_altitude: float = 0, target_radius: float = 0.5) -> bool | None:
+    def flight_to(self, dx: float, dy: float, target_altitude: float = 0, TARGET_RADIUS: float = 1, STABILIZATION_CYCLE: int = 3) -> bool | None:
         """
         Летит в точку со смещением относительно текущей позиции и выводит сообщение о половине пути
 
@@ -284,14 +283,9 @@ class Multirotor:
         center_lat_rad = math.radians(center_lat)
         center_lon_rad = math.radians(center_lon)
 
-        # Если target_altitude не указана, используем текущую высоту
-        if target_altitude == 0:
-            target_altitude = start_alt
-        else:
-            target_altitude = target_altitude  # абсолютная высота
-
+        # Перевод координат в географические
         final_lat_rad, final_lon_rad, final_alt = WGS84.convert_local_tangent_to_geodetic(
-            dx, dy, target_altitude - start_alt,  # east, north, up (смещения)
+            dx, dy, target_altitude,  # east, north, up (смещения)
             center_lat_rad,  # origin latitude в радианах
             center_lon_rad,  # origin longitude в радианах
             start_alt  # origin altitude
@@ -335,10 +329,10 @@ class Multirotor:
                 print(f"\rРасстояние до цели: {distance:.2f} м", end="", flush=True)
 
                 # Проверка достижения цели
-                if distance < target_radius:
+                if distance < TARGET_RADIUS:
                     stable_counter += 1
-                    if stable_counter > 5:  # Подтверждаем достижение цели после 5 циклов стабильности
-                        print(f"\nЦель достигнута! Расстояние: {distance:.2f}м < {target_radius}м")
+                    if stable_counter > STABILIZATION_CYCLE:  # Подтверждаем достижение цели после циклов стабильности
+                        print(f"\nЦель достигнута! Расстояние: {distance:.2f}м < {TARGET_RADIUS}м")
                         self._update_current_position()
                         return True
                 else:
@@ -346,7 +340,7 @@ class Multirotor:
 
                 # Проверка на половину пути
                 if not half_distance_notified and distance <= total_distance * 0.5:
-                    print(f"\n!!!!! Половина пути пройдена! Осталось {distance:.1f}м !!!!!")
+                    print(f"\r!!!!! Половина пути пройдена! Осталось {distance:.1f}м !!!!!", flush=True)
                     half_distance_notified = True
 
                 # Отправка команды на полет
@@ -359,6 +353,109 @@ class Multirotor:
                     int(final_lat * 1e7),  # широта в градусах * 1e7
                     int(final_lon * 1e7),  # долгота в градусах * 1e7
                     final_alt,  # целевая высота
+                    0, 0, 0,  # скорости
+                    0, 0, 0,  # ускорения
+                    0, 0  # yaw, yaw_rate
+                )
+
+                time.sleep(0.1)
+
+        except KeyboardInterrupt:
+            print("\nПолет прерван пользователем")
+            return False
+        except Exception as e:
+            print(f"\nОшибка во время полета: {e}")
+            return False
+
+    def flight_to_gps(self, lat: float, lon: float, alt: float = 0, TARGET_RADIUS: float = 1,
+                      STABILIZATION_CYCLE: int = 3) -> bool | None:
+        """
+        Летит в точку по заданным GPS координатам и выводит сообщение о половине пути
+
+        Args:
+            lat: целевая широта в градусах
+            lon: целевая долгота в градусах
+            alt: целевая высота в метрах (относительная, 0 = текущая высота)
+            TARGET_RADIUS: радиус цели в метрах
+            STABILIZATION_CYCLE: количество циклов стабилизации для подтверждения достижения цели
+
+        Returns:
+            True если полет выполнен успешно
+        """
+        print(f"Начало полета в GPS точку: lat={lat:.7f}°, lon={lon:.7f}°, alt={alt}м")
+
+        # Получение текущего местоположения
+        current_pos = self._get_current_position(timeout=3)
+        if not current_pos:
+            print("Ошибка: Не удалось получить текущую позицию")
+            return False
+
+        start_lat, start_lon, start_alt = current_pos
+        print(f"Стартовая позиция: lat={start_lat:.7f}°, lon={start_lon:.7f}°, alt={start_alt:.1f}м")
+
+        # Определение целевой высоты
+        target_alt = start_alt if alt == 0 else alt
+        if alt == 0:
+            print(f"Используется текущая высота: {target_alt:.1f}м")
+        else:
+            print(f"Целевая высота: {target_alt:.1f}м")
+
+        # Вычисляем общее расстояние до цели
+        total_distance = _calculate_distance_between_points(
+            start_lat, start_lon, start_alt,
+            lat, lon, target_alt
+        )
+        print(f"Общее расстояние до цели: {total_distance:.2f}м")
+
+        # Флаг для отслеживания, было ли уже выведено сообщение о половине пути
+        half_distance_notified = False
+        stable_counter = 0  # счетчик для определения стабилизации у цели
+
+        try:
+            while True:
+                # Получаем текущую позицию
+                current_pos = self._get_current_position(timeout=self.POSITION_TIMEOUT)
+                if not current_pos:
+                    print("\rПредупреждение: Не удалось получить текущую позицию, повтор...", end="", flush=True)
+                    time.sleep(0.2)
+                    continue
+
+                new_lat, new_lon, new_alt = current_pos
+
+                # Проверяем расстояние до цели
+                distance = _calculate_distance_between_points(
+                    new_lat, new_lon, new_alt,
+                    lat, lon, target_alt
+                )
+
+                # Выводим расстояние с перезаписью строки
+                print(f"\rРасстояние до цели: {distance:.2f} м", end="", flush=True)
+
+                # Проверка достижения цели
+                if distance < TARGET_RADIUS:
+                    stable_counter += 1
+                    if stable_counter >= STABILIZATION_CYCLE:  # Подтверждаем достижение цели после циклов стабильности
+                        print(f"\nЦель достигнута! Расстояние: {distance:.2f}м < {TARGET_RADIUS}м")
+                        self._update_current_position()
+                        return True
+                else:
+                    stable_counter = 0
+
+                # Проверка на половину пути
+                if not half_distance_notified and distance <= total_distance * 0.5:
+                    print(f"\r!!!!! Половина пути пройдена! Осталось {distance:.1f}м !!!!!", flush=True)
+                    half_distance_notified = True
+
+                # Отправка команды на полет
+                self.master.mav.set_position_target_global_int_send(
+                    0,
+                    self.master.target_system,
+                    self.master.target_component,
+                    mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
+                    0b0000111111111000,  # маска: использовать только позицию
+                    int(lat * 1e7),  # широта в градусах * 1e7
+                    int(lon * 1e7),  # долгота в градусах * 1e7
+                    target_alt,  # целевая высота
                     0, 0, 0,  # скорости
                     0, 0, 0,  # ускорения
                     0, 0  # yaw, yaw_rate
@@ -386,85 +483,11 @@ class Multirotor:
 
         print(f"Возврат в домашнюю позицию: lat={self.home_lat:.7f}°, lon={self.home_lon:.7f}°")
 
-        # Получаем текущую позицию для расчета расстояния
-        current_pos = self._get_current_position(timeout=3)
-        if not current_pos:
-            print("Ошибка: Не удалось получить текущую позицию")
-            return False
-
-        current_lat, current_lon, current_alt = current_pos
-        print(f"Текущая высота: {current_alt:.1f}м, будет сохранена во время возврата")
-
-        # Вычисляем расстояние до дома (по горизонтали)
-        initial_distance = _calculate_distance_between_points(
-            current_lat, current_lon, current_alt,
-            self.home_lat, self.home_lon, current_alt
-        )
-        print(f"Горизонтальное расстояние до дома: {initial_distance:.2f}м")
-
         # Если мы уже рядом с домом по горизонтали, переходим сразу к посадке
-        if initial_distance < self.HOME_RADIUS:
-            print(f"Уже рядом с домом (расстояние: {initial_distance:.2f}м)")
-            print("Переход к посадке...")
-            return self.land()
+        self.flight_to_gps(self.home_lat, self.home_lon)
 
-        # Флаг для половины пути
-        half_distance_notified = False
+        return self.land()
 
-        try:
-            while True:
-                # Получаем текущую позицию
-                current_pos = self._get_current_position(timeout=self.POSITION_TIMEOUT)
-                if not current_pos:
-                    print("\rПредупреждение: Не удалось получить текущую позицию, повтор...", end="", flush=True)
-                    time.sleep(0.2)
-                    continue
-
-                new_lat, new_lon, new_alt = current_pos
-
-                # Расчет текущего горизонтального расстояния до дома
-                distance = _calculate_distance_between_points(
-                    new_lat, new_lon, new_alt,
-                    self.home_lat, self.home_lon, new_alt
-                )
-
-                print(f"\rРасстояние до дома: {distance:.2f} м | Высота: {new_alt:.1f}м",
-                      end="", flush=True)
-
-                # Проверка достижения дома (по горизонтали)
-                if distance < self.HOME_RADIUS:
-                    print(f"\nДом достигнут! Расстояние: {distance:.2f}м на высоте {new_alt:.1f}м")
-                    print("Переход к посадке...")
-                    return self.land()
-
-                # Проверка на половину пути
-                if not half_distance_notified and distance <= initial_distance * 0.5:
-                    print(f"\n*** Половина пути до дома! Осталось {distance:.1f}м ***")
-                    half_distance_notified = True
-
-                # Отправка команды на полет домой (на текущей высоте)
-                self.master.mav.set_position_target_global_int_send(
-                    0,
-                    self.master.target_system,
-                    self.master.target_component,
-                    mavutil.mavlink.MAV_FRAME_GLOBAL_RELATIVE_ALT_INT,
-                    0b0000111111111000,
-                    int(self.home_lat * 1e7),
-                    int(self.home_lon * 1e7),
-                    new_alt,  # Используем ТЕКУЩУЮ высоту
-                    0, 0, 0,
-                    0, 0, 0,
-                    0, 0
-                )
-
-                time.sleep(0.1)
-
-        except KeyboardInterrupt:
-            print("\nВозврат домой прерван пользователем")
-            return False
-        except Exception as e:
-            print(f"\nОшибка во время возврата домой: {e}")
-            return False
 
     def land(self) -> bool:
         """
